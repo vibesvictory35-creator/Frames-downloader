@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chief's Frame Grabber</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--accent:#3fb950;--text:#e6edf3;--muted:#8b949e;--border:#30363d;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:24px;}
+  .wrap{max-width:720px;margin:0 auto;}
+  h1{font-size:22px;margin-bottom:4px;}
+  p.sub{color:var(--muted);margin-top:0;margin-bottom:24px;font-size:14px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:16px;}
+  label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px;}
+  input[type=text], select{width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:#0d1117;color:var(--text);font-size:14px;margin-bottom:14px;}
+  #timestamps{display:flex;flex-direction:column;gap:8px;margin-bottom:10px;}
+  .ts-row{display:flex;gap:8px;}
+  .ts-row input{margin-bottom:0;flex:1;}
+  .ts-row button{background:#21262d;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:0 12px;cursor:pointer;}
+  .btn-add{background:none;border:1px dashed var(--border);color:var(--muted);padding:8px;border-radius:6px;cursor:pointer;width:100%;font-size:13px;}
+  .btn-main{background:var(--accent);color:#0d1117;font-weight:600;border:none;padding:12px;border-radius:6px;width:100%;font-size:15px;cursor:pointer;margin-top:6px;}
+  .btn-main:disabled{opacity:0.5;}
+  #results{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px;}
+  .frame-card{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+  .frame-card img{width:100%;display:block;}
+  .frame-card .ts-label{padding:8px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;}
+  .frame-card a{color:var(--accent);text-decoration:none;font-size:12px;}
+  .error{color:#f85149;font-size:13px;padding:8px;}
+  .status{font-size:13px;color:var(--muted);margin-top:10px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎞️ Chief's Frame Grabber</h1>
+  <p class="sub">Pull HD frames from any YouTube video at exact timestamps.</p>
+
+  <div class="card">
+    <label>YouTube URL</label>
+    <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
+
+    <label>Quality</label>
+    <select id="quality">
+      <option value="best">Best available</option>
+      <option value="1080p">Up to 1080p</option>
+      <option value="720p">Up to 720p</option>
+    </select>
+
+    <label>Timestamps</label>
+    <div id="timestamps">
+      <div class="ts-row"><input type="text" placeholder="e.g. 1:23 or 00:01:23"><button onclick="removeRow(this)">✕</button></div>
+    </div>
+    <button class="btn-add" onclick="addRow()">+ Add another timestamp</button>
+
+    <button class="btn-main" id="go" onclick="run()">Extract Frames</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div id="results"></div>
+</div>
+
+<script>
+function addRow(){
+  const div = document.createElement('div');
+  div.className = 'ts-row';
+  div.innerHTML = '<input type="text" placeholder="e.g. 1:23 or 00:01:23"><button onclick="removeRow(this)">✕</button>';
+  document.getElementById('timestamps').appendChild(div);
+}
+function removeRow(btn){
+  const rows = document.querySelectorAll('.ts-row');
+  if(rows.length > 1) btn.parentElement.remove();
+}
+async function run(){
+  const url = document.getElementById('url').value.trim();
+  const quality = document.getElementById('quality').value;
+  const timestamps = Array.from(document.querySelectorAll('#timestamps input'))
+    .map(i => i.value.trim()).filter(Boolean);
+  const status = document.getElementById('status');
+  const results = document.getElementById('results');
+  const btn = document.getElementById('go');
+
+  if(!url || timestamps.length === 0){
+    status.textContent = 'Enter a URL and at least one timestamp.';
+    return;
+  }
+  btn.disabled = true;
+  status.textContent = 'Resolving video & extracting frames... this can take a few seconds per timestamp.';
+  results.innerHTML = '';
+
+  try{
+    const res = await fetch('/api/extract', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url, timestamps, quality})
+    });
+    const data = await res.json();
+    if(!res.ok){
+      status.textContent = data.detail || 'Something went wrong.';
+      btn.disabled = false;
+      return;
+    }
+    status.textContent = 'Done.';
+    data.results.forEach(r => {
+      const card = document.createElement('div');
+      card.className = 'frame-card';
+      if(r.ok){
+        card.innerHTML = `<img src="/api/frame/${r.file}"><div class="ts-label"><span>${r.timestamp}</span><a href="/api/frame/${r.file}" download>Download</a></div>`;
+      } else {
+        card.innerHTML = `<div class="error">${r.timestamp}: ${r.error}</div>`;
+      }
+      results.appendChild(card);
+    });
+  } catch(e){
+    status.textContent = 'Request failed: ' + e.message;
+  }
+  btn.disabled = false;
+}
+</script>
+</body>
+</html>
