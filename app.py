@@ -15,14 +15,20 @@ peak of the transition (often mid-crossfade / blurry). This version:
      across the timeline so you get a representative sample of the whole
      video, not just clustered near a busy section
 
-Key fix in this version: passing the raw googlevideo stream URL to ffmpeg
-directly caused intermittent 403 errors, even with matching headers. These
-URLs are signed and tied to the requesting IP - on Railway, yt-dlp and a
-separate ffmpeg call can go out through different egress IPs, causing a
-mismatch. Fix: yt-dlp now downloads the video file itself (video-only,
-no audio needed for frames), and all ffmpeg operations run against that
-local file instead of a remote URL. This removes the signed-URL/IP problem
-entirely rather than working around it.
+Key fix from the previous version: passing the raw googlevideo stream URL
+to ffmpeg directly caused intermittent 403 errors - these URLs are signed
+and tied to the requesting IP, and yt-dlp/ffmpeg could go out through
+different egress IPs on Railway. Fix: yt-dlp downloads the video file
+itself (video-only, no audio needed for frames), and all ffmpeg operations
+run against that local file instead of a remote URL.
+
+Speed fixes in this version:
+  - Scene detection now runs on a downscaled (320px wide), reduced-framerate
+    (5fps) copy of the video instead of full resolution/framerate - scene
+    changes are still clearly detectable at this size, but decoding is much
+    cheaper.
+  - Frame extraction runs in parallel (thread pool) instead of one at a
+    time, since each extraction is an independent seek + decode.
 """
 
 import base64
@@ -35,6 +41,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException
@@ -74,6 +81,7 @@ OUTPUT_DIR = tempfile.gettempdir()
 POST_TRANSITION_OFFSET = 0.4  # seconds to wait after a detected change before grabbing the frame
 CLUSTER_GAP = 0.75            # change-points closer together than this are treated as one cut
 FRAME_MAX_AGE_SECONDS = 3600  # sweep frame/video files older than this on each request
+EXTRACT_WORKERS = 4           # parallel ffmpeg frame extractions
 
 
 class ProcessRequest(BaseModel):
@@ -126,6 +134,7 @@ def download_video(youtube_url: str, quality: str, job_id: str) -> Tuple[dict, s
 
     errors = []
     info = None
+    filepath = None
     for player_client in client_order:
         opts = dict(base_opts)
         opts["extractor_args"] = {"youtube": {"player_client": player_client}}
@@ -141,7 +150,7 @@ def download_video(youtube_url: str, quality: str, job_id: str) -> Tuple[dict, s
     if info is None:
         raise RuntimeError("All client attempts failed -> " + " | ".join(errors))
 
-    if not os.path.exists(filepath):
+    if not filepath or not os.path.exists(filepath):
         # fall back to a glob in case the actual extension differs slightly
         # from what prepare_filename predicted
         matches = glob.glob(os.path.join(OUTPUT_DIR, f"video_{job_id}.*"))
@@ -190,15 +199,17 @@ def find_change_points(local_path: str, duration: Optional[float]) -> List[float
     """
     Scans the video once with a low scene-change threshold to catch every
     shot change (not just big hard cuts), returns raw candidate timestamps.
-    Low threshold on purpose - clustering afterward removes the noise.
+    Downscaled to 320px width and resampled to 5fps before detection - scene
+    changes are still clearly visible at this resolution/rate, but decoding
+    is dramatically cheaper than doing this at full resolution/framerate.
     Runs against the local downloaded file - no network/signed-URL involved.
     """
     cmd = [
         "ffmpeg", "-i", local_path,
-        "-filter:v", "select='gt(scene,0.15)',showinfo",
+        "-filter:v", "fps=5,scale=320:-2,select='gt(scene,0.15)',showinfo",
         "-f", "null", "-",
     ]
-    timeout = max(120, int(duration * 1.5)) if duration else 600
+    timeout = max(60, int(duration * 0.5)) if duration else 300
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     times = [float(m) for m in re.findall(r"pts_time:([\d.]+)", result.stderr)]
     return sorted(times)
@@ -258,6 +269,35 @@ def extract_frame(local_path: str, timestamp_seconds: float, out_path: str):
         raise RuntimeError(result.stderr[-500:])
 
 
+def extract_all_frames(local_path: str, frame_times: List[float], job_id: str) -> List[dict]:
+    """
+    Extracts every requested frame in parallel - each extraction is an
+    independent ffmpeg seek + single-frame decode, so there's no need to
+    wait for one to finish before starting the next.
+    """
+    frames: List[Optional[dict]] = [None] * len(frame_times)
+
+    def _do_extract(index: int, secs: float) -> Tuple[int, dict]:
+        filename = f"frame_{job_id}_{index}.jpg"
+        out_path = os.path.join(OUTPUT_DIR, filename)
+        try:
+            extract_frame(local_path, secs, out_path)
+            mins = int(secs // 60)
+            rem = secs % 60
+            label = f"{mins}:{rem:05.2f}"
+            return index, {"timestamp": label, "seconds": round(secs, 2), "file": filename, "ok": True}
+        except Exception as e:
+            return index, {"timestamp": f"{secs:.1f}s", "ok": False, "error": str(e)}
+
+    with ThreadPoolExecutor(max_workers=EXTRACT_WORKERS) as executor:
+        futures = [executor.submit(_do_extract, i, secs) for i, secs in enumerate(frame_times)]
+        for future in as_completed(futures):
+            index, result = future.result()
+            frames[index] = result
+
+    return frames  # type: ignore[return-value]
+
+
 @app.post("/api/process")
 def process(req: ProcessRequest):
     if req.frame_count < 1 or req.frame_count > 60:
@@ -294,18 +334,7 @@ def process(req: ProcessRequest):
                 for i in range(req.frame_count)
             ]
 
-    frames = []
-    for i, secs in enumerate(frame_times):
-        try:
-            filename = f"frame_{job_id}_{i}.jpg"
-            out_path = os.path.join(OUTPUT_DIR, filename)
-            extract_frame(local_path, secs, out_path)
-            mins = int(secs // 60)
-            rem = secs % 60
-            label = f"{mins}:{rem:05.2f}"
-            frames.append({"timestamp": label, "seconds": round(secs, 2), "file": filename, "ok": True})
-        except Exception as e:
-            frames.append({"timestamp": f"{secs:.1f}s", "ok": False, "error": str(e)})
+    frames = extract_all_frames(local_path, frame_times, job_id)
 
     # done with the downloaded source video - remove it now rather than
     # waiting for the next sweep, since these can be large
