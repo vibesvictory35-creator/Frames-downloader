@@ -14,6 +14,13 @@ peak of the transition (often mid-crossfade / blurry). This version:
   4. If there are more clusters than frames requested, spreads picks evenly
      across the timeline so you get a representative sample of the whole
      video, not just clustered near a busy section
+
+Key fix in this version: the direct googlevideo stream URL yt-dlp returns
+is tied to the HTTP headers (mainly User-Agent) used when it was issued.
+Passing the bare URL to ffmpeg with no headers works on some videos/edge
+servers and 403s on others - inconsistent and unpredictable. Now the
+headers yt-dlp used are captured and passed to every ffmpeg call that
+touches the stream URL, removing that inconsistency entirely.
 """
 
 import base64
@@ -26,7 +33,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -90,17 +97,16 @@ def _try_extract(youtube_url: str, ydl_opts: dict):
         return ydl.extract_info(youtube_url, download=False)
 
 
-def get_video_data(youtube_url: str, quality: str) -> Tuple[dict, str]:
+def get_video_data(youtube_url: str, quality: str) -> Tuple[dict, str, Dict[str, str]]:
     """
     One yt-dlp call gets both the full metadata dict AND the direct stream URL
     needed for ffmpeg - no need to hit YouTube twice.
 
-    YouTube now requires a JS-challenge solve (via yt-dlp-ejs + a JS runtime
-    like Deno) to hand back real playable formats instead of image-only
-    results. With that in place, the "web" client is the most reliable when
-    real cookies are supplied, since PO tokens/cookies are validated against
-    it most consistently. android/ios are tried as fallbacks since they
-    sometimes bypass bot-check without needing cookies at all.
+    Also returns the HTTP headers yt-dlp used to obtain that URL. YouTube's
+    CDN validates those headers (mainly User-Agent) on some edge servers -
+    without them, ffmpeg gets a 403 on some videos even though the URL
+    itself is valid. Reusing the same headers on every ffmpeg call fixes
+    this reliably.
     """
     format_map = {
         "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -137,11 +143,14 @@ def get_video_data(youtube_url: str, quality: str) -> Tuple[dict, str]:
         raise RuntimeError("All client attempts failed -> " + " | ".join(errors))
 
     if "requested_formats" in info and info["requested_formats"]:
-        stream_url = info["requested_formats"][0]["url"]
+        fmt = info["requested_formats"][0]
+        stream_url = fmt["url"]
+        headers = fmt.get("http_headers") or info.get("http_headers") or {}
     else:
         stream_url = info["url"]
+        headers = info.get("http_headers") or {}
 
-    return info, stream_url
+    return info, stream_url, headers
 
 
 def build_metadata(info: dict) -> dict:
@@ -178,14 +187,22 @@ def build_metadata(info: dict) -> dict:
     }
 
 
-def find_change_points(stream_url: str, duration: Optional[float]) -> List[float]:
+def _headers_arg(headers: Dict[str, str]) -> str:
+    """Formats a headers dict for ffmpeg's -headers flag (each line needs \\r\\n)."""
+    return "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+
+
+def find_change_points(stream_url: str, duration: Optional[float], headers: Dict[str, str]) -> List[float]:
     """
     Scans the video once with a low scene-change threshold to catch every
     shot change (not just big hard cuts), returns raw candidate timestamps.
     Low threshold on purpose - clustering afterward removes the noise.
     """
-    cmd = [
-        "ffmpeg", "-i", stream_url,
+    cmd = ["ffmpeg"]
+    if headers:
+        cmd += ["-headers", _headers_arg(headers)]
+    cmd += [
+        "-i", stream_url,
         "-filter:v", "select='gt(scene,0.15)',showinfo",
         "-f", "null", "-",
     ]
@@ -235,9 +252,11 @@ def pick_frame_times(cluster_times: List[float], frame_count: int, duration: Opt
     return [candidates[int(i * step)] for i in range(frame_count)]
 
 
-def extract_frame(stream_url: str, timestamp_seconds: float, out_path: str):
-    cmd = [
-        "ffmpeg", "-y",
+def extract_frame(stream_url: str, timestamp_seconds: float, out_path: str, headers: Dict[str, str]):
+    cmd = ["ffmpeg", "-y"]
+    if headers:
+        cmd += ["-headers", _headers_arg(headers)]
+    cmd += [
         "-ss", str(timestamp_seconds),
         "-i", stream_url,
         "-frames:v", "1",
@@ -257,7 +276,7 @@ def process(req: ProcessRequest):
     _cleanup_old_frames()
 
     try:
-        info, stream_url = get_video_data(req.url, req.quality)
+        info, stream_url, stream_headers = get_video_data(req.url, req.quality)
     except Exception as e:
         raise HTTPException(400, f"Could not resolve video: {e}")
 
@@ -265,7 +284,7 @@ def process(req: ProcessRequest):
     duration = info.get("duration")
 
     try:
-        raw_changes = find_change_points(stream_url, duration)
+        raw_changes = find_change_points(stream_url, duration, stream_headers)
     except subprocess.TimeoutExpired:
         raise HTTPException(408, "Scene scan timed out - try a shorter video")
     except Exception as e:
@@ -289,7 +308,7 @@ def process(req: ProcessRequest):
         try:
             filename = f"frame_{job_id}_{i}.jpg"
             out_path = os.path.join(OUTPUT_DIR, filename)
-            extract_frame(stream_url, secs, out_path)
+            extract_frame(stream_url, secs, out_path, stream_headers)
             mins = int(secs // 60)
             rem = secs % 60
             label = f"{mins}:{rem:05.2f}"
