@@ -21,11 +21,13 @@ import os
 import re
 import subprocess
 import tempfile
+import urllib.parse
+import urllib.request
 import uuid
 from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 import yt_dlp
 
@@ -291,6 +293,35 @@ def get_frame(filename: str):
     if not os.path.exists(path):
         raise HTTPException(404, "Frame not found or expired")
     return FileResponse(path, media_type="image/jpeg")
+
+
+ALLOWED_THUMBNAIL_HOSTS = ("ytimg.com", "googleusercontent.com", "ggpht.com")
+
+
+@app.get("/api/download-thumbnail")
+def download_thumbnail(url: str):
+    """
+    Proxies the thumbnail download server-side. Browsers block forcing a
+    download on cross-origin images from a plain <a download> link unless
+    the remote server cooperates, so we fetch it here and stream it back
+    with a proper attachment header instead.
+    """
+    parsed_host = urllib.parse.urlparse(url).hostname or ""
+    if not any(parsed_host.endswith(h) for h in ALLOWED_THUMBNAIL_HOSTS):
+        raise HTTPException(400, "URL not from an allowed thumbnail host")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+            content_type = resp.headers.get("Content-Type", "image/jpeg")
+    except Exception as e:
+        raise HTTPException(502, f"Could not fetch thumbnail: {e}")
+
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": 'attachment; filename="thumbnail.jpg"'},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
