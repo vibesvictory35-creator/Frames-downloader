@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Chief's Frame Grabber</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   :root{--bg:#0d1117;--card:#161b22;--accent:#3fb950;--text:#e6edf3;--muted:#8b949e;--border:#30363d;}
   *{box-sizing:border-box;}
@@ -21,17 +22,30 @@
   .status{font-size:13px;color:var(--muted);margin-top:10px;}
   .meta-box{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px;}
   .meta-box img{width:100%;border-radius:6px;margin-bottom:12px;}
-  .meta-box h3{margin:0 0 4px;}
+  .meta-box h3{margin:0 0 4px;display:inline;}
   .meta-sub{color:var(--muted);font-size:13px;margin:0 0 12px;}
   .desc-box{font-size:13px;white-space:pre-wrap;line-height:1.5;max-height:200px;overflow-y:auto;border:1px solid var(--border);padding:10px;border-radius:6px;}
   .tag{background:#21262d;border:1px solid var(--border);padding:2px 8px;border-radius:4px;font-size:12px;margin:2px;display:inline-block;}
   #frames{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-  .frame-card{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+  .frame-card{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;position:relative;}
   .frame-card img{width:100%;display:block;}
   .frame-card .ts-label{padding:8px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;}
   .frame-card a{color:var(--accent);text-decoration:none;font-size:12px;}
+  .frame-checkbox{position:absolute;top:8px;left:8px;width:20px;height:20px;cursor:pointer;z-index:2;}
   .error{color:#f85149;font-size:13px;padding:8px;}
   .note{font-size:12px;color:var(--muted);margin-top:-8px;margin-bottom:14px;}
+  .row-inline{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+  .copy-btn{background:#21262d;border:1px solid var(--border);color:var(--text);font-size:11px;padding:3px 10px;border-radius:5px;cursor:pointer;flex-shrink:0;}
+  .copy-btn:hover{background:#30363d;}
+  .copy-btn.copied{background:var(--accent);color:#0d1117;border-color:var(--accent);}
+  .field-label-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;}
+  .field-label-row b{font-size:13px;}
+  .selection-bar{display:flex;gap:8px;align-items:center;margin-bottom:12px;font-size:13px;color:var(--muted);}
+  .btn-small{background:#21262d;border:1px solid var(--border);color:var(--text);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;}
+  .btn-small:hover{background:#30363d;}
+  .btn-small:disabled{opacity:0.4;cursor:not-allowed;}
+  .thumb-wrap{position:relative;margin-bottom:12px;}
+  .thumb-download-btn{position:absolute;bottom:8px;right:8px;background:rgba(13,17,23,0.85);border:1px solid var(--border);color:var(--text);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;}
 </style>
 </head>
 <body>
@@ -64,6 +78,7 @@
   </div>
 
   <div id="meta-container"></div>
+  <div id="selection-bar-container"></div>
   <div id="frames"></div>
 </div>
 
@@ -84,16 +99,35 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+async function copyToClipboard(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    var original = btn.textContent;
+    btn.textContent = "Copied!";
+    btn.classList.add("copied");
+    setTimeout(function () {
+      btn.textContent = original;
+      btn.classList.remove("copied");
+    }, 1500);
+  } catch (e) {
+    log("Copy failed: " + e.message);
+    btn.textContent = "Copy failed";
+    setTimeout(function () { btn.textContent = "Copy"; }, 1500);
+  }
+}
+
 function renderMetadata(d) {
   var container = document.getElementById("meta-container");
   var box = document.createElement("div");
   box.className = "meta-box";
 
   var tagsHtml = "";
+  var tagsPlainText = "";
   if (d.tags && d.tags.length) {
     for (var i = 0; i < d.tags.length; i++) {
       tagsHtml += '<span class="tag">' + escapeHtml(d.tags[i]) + "</span>";
     }
+    tagsPlainText = d.tags.join(", ");
   } else {
     tagsHtml = '<span style="color:var(--muted);">No tags</span>';
   }
@@ -108,23 +142,59 @@ function renderMetadata(d) {
   var viewsText = d.view_count ? d.view_count.toLocaleString() + " views" : "";
   var descText = escapeHtml(d.description || "No description");
   var catText = d.category || (d.categories && d.categories.join(", ")) || "-";
+  var titleText = d.title || "Untitled";
 
   var html = "";
   if (d.best_thumbnail) {
+    html += '<div class="thumb-wrap">';
     html += '<img src="' + d.best_thumbnail + '">';
+    html += '<button type="button" class="thumb-download-btn" id="thumb-dl-btn">Download Thumbnail</button>';
+    html += '</div>';
   }
-  html += "<h3>" + escapeHtml(d.title || "Untitled") + "</h3>";
+
+  html += '<div class="field-label-row"><h3>' + escapeHtml(titleText) + '</h3><button type="button" class="copy-btn" id="copy-title-btn">Copy</button></div>';
   html += '<p class="meta-sub">' + escapeHtml(d.channel || "Unknown channel") + " - " + dur + " - " + viewsText + "</p>";
+
+  html += '<div class="field-label-row"><b>Description</b><button type="button" class="copy-btn" id="copy-desc-btn">Copy</button></div>';
   html += '<div class="desc-box">' + descText + "</div>";
-  html += '<div style="margin-top:12px;"><b style="font-size:13px;">Tags:</b><br>' + tagsHtml + "</div>";
+
+  html += '<div class="field-label-row" style="margin-top:12px;"><b>Tags</b><button type="button" class="copy-btn" id="copy-tags-btn">Copy</button></div>';
+  html += '<div>' + tagsHtml + "</div>";
+
   html += '<p style="font-size:13px;margin-top:12px;"><b>Category:</b> ' + escapeHtml(catText) + "</p>";
   html += '<p style="font-size:12px;color:var(--muted);margin-top:8px;">Uploaded: ' + (d.upload_date || "-") + " - Likes: " + (d.like_count != null ? d.like_count : "-") + " - Comments: " + (d.comment_count != null ? d.comment_count : "-") + "</p>";
 
   box.innerHTML = html;
   container.appendChild(box);
+
+  var titleBtn = document.getElementById("copy-title-btn");
+  if (titleBtn) titleBtn.addEventListener("click", function () { copyToClipboard(titleText, titleBtn); });
+
+  var descBtn = document.getElementById("copy-desc-btn");
+  if (descBtn) descBtn.addEventListener("click", function () { copyToClipboard(d.description || "", descBtn); });
+
+  var tagsBtn = document.getElementById("copy-tags-btn");
+  if (tagsBtn) tagsBtn.addEventListener("click", function () { copyToClipboard(tagsPlainText, tagsBtn); });
+
+  var thumbBtn = document.getElementById("thumb-dl-btn");
+  if (thumbBtn && d.best_thumbnail) {
+    thumbBtn.addEventListener("click", function () {
+      var proxyUrl = "/api/download-thumbnail?url=" + encodeURIComponent(d.best_thumbnail);
+      var a = document.createElement("a");
+      a.href = proxyUrl;
+      a.download = "thumbnail.jpg";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    });
+  }
 }
 
+
+var selectedFrames = {};
+
 function renderFrames(frames, detectedChanges, requested) {
+  selectedFrames = {};
   var container = document.getElementById("frames");
   var note = document.createElement("p");
   note.className = "note";
@@ -132,17 +202,113 @@ function renderFrames(frames, detectedChanges, requested) {
   note.textContent = "Detected " + detectedChanges + " scene changes, extracted " + frames.length + " of " + requested + " requested frames.";
   container.parentElement.insertBefore(note, container);
 
+  var okFrames = frames.filter(function (r) { return r.ok; });
+
+  if (okFrames.length > 0) {
+    renderSelectionBar(okFrames);
+  }
+
   frames.forEach(function (r) {
     var card = document.createElement("div");
     card.className = "frame-card";
     if (r.ok) {
-      card.innerHTML = '<img src="/api/frame/' + r.file + '"><div class="ts-label"><span>' + r.timestamp + '</span><a href="/api/frame/' + r.file + '" download>Download</a></div>';
+      var checkboxId = "chk-" + r.file;
+      card.innerHTML =
+        '<input type="checkbox" class="frame-checkbox" id="' + checkboxId + '" data-file="' + r.file + '">' +
+        '<img src="/api/frame/' + r.file + '">' +
+        '<div class="ts-label"><span>' + r.timestamp + '</span><a href="/api/frame/' + r.file + '" download>Download</a></div>';
     } else {
       card.innerHTML = '<div class="error">' + r.timestamp + ": " + r.error + "</div>";
     }
     container.appendChild(card);
+
+    if (r.ok) {
+      var checkbox = card.querySelector(".frame-checkbox");
+      checkbox.addEventListener("change", function () {
+        if (this.checked) {
+          selectedFrames[this.dataset.file] = true;
+        } else {
+          delete selectedFrames[this.dataset.file];
+        }
+        updateSelectionCount();
+      });
+    }
   });
 }
+
+function renderSelectionBar(okFrames) {
+  var barContainer = document.getElementById("selection-bar-container");
+  var bar = document.createElement("div");
+  bar.className = "selection-bar";
+  bar.innerHTML =
+    '<button type="button" class="btn-small" id="select-all-btn">Select All</button>' +
+    '<button type="button" class="btn-small" id="deselect-all-btn">Deselect All</button>' +
+    '<span id="selection-count">0 selected</span>' +
+    '<button type="button" class="btn-small" id="download-selected-btn" disabled style="margin-left:auto;">Download Selected</button>';
+  barContainer.innerHTML = "";
+  barContainer.appendChild(bar);
+
+  document.getElementById("select-all-btn").addEventListener("click", function () {
+    document.querySelectorAll(".frame-checkbox").forEach(function (cb) {
+      cb.checked = true;
+      selectedFrames[cb.dataset.file] = true;
+    });
+    updateSelectionCount();
+  });
+
+  document.getElementById("deselect-all-btn").addEventListener("click", function () {
+    document.querySelectorAll(".frame-checkbox").forEach(function (cb) {
+      cb.checked = false;
+    });
+    selectedFrames = {};
+    updateSelectionCount();
+  });
+
+  document.getElementById("download-selected-btn").addEventListener("click", downloadSelectedFrames);
+}
+
+function updateSelectionCount() {
+  var count = Object.keys(selectedFrames).length;
+  var countEl = document.getElementById("selection-count");
+  var dlBtn = document.getElementById("download-selected-btn");
+  if (countEl) countEl.textContent = count + " selected";
+  if (dlBtn) dlBtn.disabled = count === 0;
+}
+
+async function downloadSelectedFrames() {
+  var files = Object.keys(selectedFrames);
+  if (files.length === 0) return;
+
+  var dlBtn = document.getElementById("download-selected-btn");
+  var originalText = dlBtn.textContent;
+  dlBtn.disabled = true;
+  dlBtn.textContent = "Zipping...";
+
+  try {
+    var zip = new JSZip();
+    for (var i = 0; i < files.length; i++) {
+      var resp = await fetch("/api/frame/" + files[i]);
+      var blob = await resp.blob();
+      zip.file(files[i], blob);
+    }
+    var content = await zip.generateAsync({ type: "blob" });
+    var url = URL.createObjectURL(content);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "frames.zip";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    log("Zip download failed: " + e.message);
+    alert("Could not create zip: " + e.message);
+  }
+
+  dlBtn.textContent = originalText;
+  dlBtn.disabled = false;
+}
+
 
 async function run() {
   log("run() triggered");
@@ -151,11 +317,13 @@ async function run() {
   var frameCount = parseInt(document.getElementById("framecount").value) || 10;
   var status = document.getElementById("status");
   var metaContainer = document.getElementById("meta-container");
+  var selectionBarContainer = document.getElementById("selection-bar-container");
   var framesContainer = document.getElementById("frames");
   var btn = document.getElementById("go");
 
   status.textContent = "";
   metaContainer.innerHTML = "";
+  selectionBarContainer.innerHTML = "";
   framesContainer.innerHTML = "";
 
   if (!url) {
