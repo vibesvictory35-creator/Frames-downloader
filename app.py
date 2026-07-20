@@ -17,10 +17,12 @@ peak of the transition (often mid-crossfade / blurry). This version:
 """
 
 import base64
+import glob
 import os
 import re
 import subprocess
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -62,12 +64,25 @@ app = FastAPI(title="Chief's Frame Grabber")
 OUTPUT_DIR = tempfile.gettempdir()
 POST_TRANSITION_OFFSET = 0.4  # seconds to wait after a detected change before grabbing the frame
 CLUSTER_GAP = 0.75            # change-points closer together than this are treated as one cut
+FRAME_MAX_AGE_SECONDS = 3600  # sweep frame files older than this on each request
 
 
 class ProcessRequest(BaseModel):
     url: str
     frame_count: int = 10
     quality: str = "720p"  # best | 1080p | 720p
+
+
+def _cleanup_old_frames():
+    """Deletes previously extracted frame_*.jpg files older than FRAME_MAX_AGE_SECONDS
+    so temp storage doesn't grow unbounded across requests."""
+    now = time.time()
+    for path in glob.glob(os.path.join(OUTPUT_DIR, "frame_*.jpg")):
+        try:
+            if now - os.path.getmtime(path) > FRAME_MAX_AGE_SECONDS:
+                os.remove(path)
+        except OSError:
+            pass
 
 
 def _try_extract(youtube_url: str, ydl_opts: dict):
@@ -80,10 +95,12 @@ def get_video_data(youtube_url: str, quality: str) -> Tuple[dict, str]:
     One yt-dlp call gets both the full metadata dict AND the direct stream URL
     needed for ffmpeg - no need to hit YouTube twice.
 
-    Cloud/datacenter IPs (Railway, AWS, etc.) frequently get YouTube's
-    "Sign in to confirm you're not a bot" block on the default web client.
-    The android/ios player clients usually aren't subject to this check, so
-    we try those first and only fall back to the default client if needed.
+    YouTube now requires a JS-challenge solve (via yt-dlp-ejs + a JS runtime
+    like Deno) to hand back real playable formats instead of image-only
+    results. With that in place, the "web" client is the most reliable when
+    real cookies are supplied, since PO tokens/cookies are validated against
+    it most consistently. android/ios are tried as fallbacks since they
+    sometimes bypass bot-check without needing cookies at all.
     """
     format_map = {
         "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -99,26 +116,25 @@ def get_video_data(youtube_url: str, quality: str) -> Tuple[dict, str]:
     if COOKIE_FILE:
         base_opts["cookiefile"] = COOKIE_FILE
 
-    client_attempts = [
-        {"player_client": ["android"]},
-        {"player_client": ["ios"]},
-        {"player_client": ["web"]},  # default - last resort
-    ]
+    if COOKIE_FILE:
+        client_order = [["web"], ["android"], ["ios"]]
+    else:
+        client_order = [["android"], ["ios"], ["web"]]
 
-    last_error = None
+    errors = []
     info = None
-    for client_args in client_attempts:
+    for player_client in client_order:
         opts = dict(base_opts)
-        opts["extractor_args"] = {"youtube": client_args}
+        opts["extractor_args"] = {"youtube": {"player_client": player_client}}
         try:
             info = _try_extract(youtube_url, opts)
             break
         except Exception as e:
-            last_error = e
+            errors.append(f"{player_client[0]}: {e}")
             continue
 
     if info is None:
-        raise last_error
+        raise RuntimeError("All client attempts failed -> " + " | ".join(errors))
 
     if "requested_formats" in info and info["requested_formats"]:
         stream_url = info["requested_formats"][0]["url"]
@@ -237,6 +253,8 @@ def extract_frame(stream_url: str, timestamp_seconds: float, out_path: str):
 def process(req: ProcessRequest):
     if req.frame_count < 1 or req.frame_count > 60:
         raise HTTPException(400, "frame_count must be between 1 and 60")
+
+    _cleanup_old_frames()
 
     try:
         info, stream_url = get_video_data(req.url, req.quality)
