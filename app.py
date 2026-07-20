@@ -15,12 +15,14 @@ peak of the transition (often mid-crossfade / blurry). This version:
      across the timeline so you get a representative sample of the whole
      video, not just clustered near a busy section
 
-Key fix in this version: the direct googlevideo stream URL yt-dlp returns
-is tied to the HTTP headers (mainly User-Agent) used when it was issued.
-Passing the bare URL to ffmpeg with no headers works on some videos/edge
-servers and 403s on others - inconsistent and unpredictable. Now the
-headers yt-dlp used are captured and passed to every ffmpeg call that
-touches the stream URL, removing that inconsistency entirely.
+Key fix in this version: passing the raw googlevideo stream URL to ffmpeg
+directly caused intermittent 403 errors, even with matching headers. These
+URLs are signed and tied to the requesting IP - on Railway, yt-dlp and a
+separate ffmpeg call can go out through different egress IPs, causing a
+mismatch. Fix: yt-dlp now downloads the video file itself (video-only,
+no audio needed for frames), and all ffmpeg operations run against that
+local file instead of a remote URL. This removes the signed-URL/IP problem
+entirely rather than working around it.
 """
 
 import base64
@@ -33,7 +35,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -71,7 +73,7 @@ app = FastAPI(title="Chief's Frame Grabber")
 OUTPUT_DIR = tempfile.gettempdir()
 POST_TRANSITION_OFFSET = 0.4  # seconds to wait after a detected change before grabbing the frame
 CLUSTER_GAP = 0.75            # change-points closer together than this are treated as one cut
-FRAME_MAX_AGE_SECONDS = 3600  # sweep frame files older than this on each request
+FRAME_MAX_AGE_SECONDS = 3600  # sweep frame/video files older than this on each request
 
 
 class ProcessRequest(BaseModel):
@@ -80,44 +82,39 @@ class ProcessRequest(BaseModel):
     quality: str = "720p"  # best | 1080p | 720p
 
 
-def _cleanup_old_frames():
-    """Deletes previously extracted frame_*.jpg files older than FRAME_MAX_AGE_SECONDS
-    so temp storage doesn't grow unbounded across requests."""
+def _cleanup_old_files():
+    """Deletes previously extracted frame_*.jpg and video_*.* files older than
+    FRAME_MAX_AGE_SECONDS so temp storage doesn't grow unbounded across requests."""
     now = time.time()
-    for path in glob.glob(os.path.join(OUTPUT_DIR, "frame_*.jpg")):
-        try:
-            if now - os.path.getmtime(path) > FRAME_MAX_AGE_SECONDS:
-                os.remove(path)
-        except OSError:
-            pass
+    for pattern in ("frame_*.jpg", "video_*.*"):
+        for path in glob.glob(os.path.join(OUTPUT_DIR, pattern)):
+            try:
+                if now - os.path.getmtime(path) > FRAME_MAX_AGE_SECONDS:
+                    os.remove(path)
+            except OSError:
+                pass
 
 
-def _try_extract(youtube_url: str, ydl_opts: dict):
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(youtube_url, download=False)
-
-
-def get_video_data(youtube_url: str, quality: str) -> Tuple[dict, str, Dict[str, str]]:
+def download_video(youtube_url: str, quality: str, job_id: str) -> Tuple[dict, str]:
     """
-    One yt-dlp call gets both the full metadata dict AND the direct stream URL
-    needed for ffmpeg - no need to hit YouTube twice.
-
-    Also returns the HTTP headers yt-dlp used to obtain that URL. YouTube's
-    CDN validates those headers (mainly User-Agent) on some edge servers -
-    without them, ffmpeg gets a 403 on some videos even though the URL
-    itself is valid. Reusing the same headers on every ffmpeg call fixes
-    this reliably.
+    Downloads the video (video-only, no audio needed for frame extraction)
+    to a local temp file using yt-dlp directly, and returns the metadata
+    dict plus the local file path. Doing the download through yt-dlp itself
+    (rather than extracting a raw stream URL for ffmpeg to fetch separately)
+    avoids the signed-URL/IP-mismatch 403 issue entirely.
     """
     format_map = {
-        "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "1080p": "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height<=1080]",
-        "720p": "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[height<=720]",
+        "best": "bestvideo[ext=mp4]/bestvideo/best",
+        "1080p": "bestvideo[ext=mp4][height<=1080]/bestvideo[height<=1080]/best[height<=1080]",
+        "720p": "bestvideo[ext=mp4][height<=720]/bestvideo[height<=720]/best[height<=720]",
     }
+    out_template = os.path.join(OUTPUT_DIR, f"video_{job_id}.%(ext)s")
     base_opts = {
         "quiet": True,
         "no_warnings": True,
         "format": format_map.get(quality, format_map["720p"]),
         "noplaylist": True,
+        "outtmpl": out_template,
     }
     if COOKIE_FILE:
         base_opts["cookiefile"] = COOKIE_FILE
@@ -133,7 +130,9 @@ def get_video_data(youtube_url: str, quality: str) -> Tuple[dict, str, Dict[str,
         opts = dict(base_opts)
         opts["extractor_args"] = {"youtube": {"player_client": player_client}}
         try:
-            info = _try_extract(youtube_url, opts)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(youtube_url, download=True)
+                filepath = ydl.prepare_filename(info)
             break
         except Exception as e:
             errors.append(f"{player_client[0]}: {e}")
@@ -142,15 +141,15 @@ def get_video_data(youtube_url: str, quality: str) -> Tuple[dict, str, Dict[str,
     if info is None:
         raise RuntimeError("All client attempts failed -> " + " | ".join(errors))
 
-    if "requested_formats" in info and info["requested_formats"]:
-        fmt = info["requested_formats"][0]
-        stream_url = fmt["url"]
-        headers = fmt.get("http_headers") or info.get("http_headers") or {}
-    else:
-        stream_url = info["url"]
-        headers = info.get("http_headers") or {}
+    if not os.path.exists(filepath):
+        # fall back to a glob in case the actual extension differs slightly
+        # from what prepare_filename predicted
+        matches = glob.glob(os.path.join(OUTPUT_DIR, f"video_{job_id}.*"))
+        if not matches:
+            raise RuntimeError("Download reported success but no output file was found")
+        filepath = matches[0]
 
-    return info, stream_url, headers
+    return info, filepath
 
 
 def build_metadata(info: dict) -> dict:
@@ -187,22 +186,15 @@ def build_metadata(info: dict) -> dict:
     }
 
 
-def _headers_arg(headers: Dict[str, str]) -> str:
-    """Formats a headers dict for ffmpeg's -headers flag (each line needs \\r\\n)."""
-    return "".join(f"{k}: {v}\r\n" for k, v in headers.items())
-
-
-def find_change_points(stream_url: str, duration: Optional[float], headers: Dict[str, str]) -> List[float]:
+def find_change_points(local_path: str, duration: Optional[float]) -> List[float]:
     """
     Scans the video once with a low scene-change threshold to catch every
     shot change (not just big hard cuts), returns raw candidate timestamps.
     Low threshold on purpose - clustering afterward removes the noise.
+    Runs against the local downloaded file - no network/signed-URL involved.
     """
-    cmd = ["ffmpeg"]
-    if headers:
-        cmd += ["-headers", _headers_arg(headers)]
-    cmd += [
-        "-i", stream_url,
+    cmd = [
+        "ffmpeg", "-i", local_path,
         "-filter:v", "select='gt(scene,0.15)',showinfo",
         "-f", "null", "-",
     ]
@@ -252,13 +244,11 @@ def pick_frame_times(cluster_times: List[float], frame_count: int, duration: Opt
     return [candidates[int(i * step)] for i in range(frame_count)]
 
 
-def extract_frame(stream_url: str, timestamp_seconds: float, out_path: str, headers: Dict[str, str]):
-    cmd = ["ffmpeg", "-y"]
-    if headers:
-        cmd += ["-headers", _headers_arg(headers)]
-    cmd += [
+def extract_frame(local_path: str, timestamp_seconds: float, out_path: str):
+    cmd = [
+        "ffmpeg", "-y",
         "-ss", str(timestamp_seconds),
-        "-i", stream_url,
+        "-i", local_path,
         "-frames:v", "1",
         "-q:v", "2",
         out_path,
@@ -273,10 +263,12 @@ def process(req: ProcessRequest):
     if req.frame_count < 1 or req.frame_count > 60:
         raise HTTPException(400, "frame_count must be between 1 and 60")
 
-    _cleanup_old_frames()
+    _cleanup_old_files()
+
+    job_id = uuid.uuid4().hex[:8]
 
     try:
-        info, stream_url, stream_headers = get_video_data(req.url, req.quality)
+        info, local_path = download_video(req.url, req.quality, job_id)
     except Exception as e:
         raise HTTPException(400, f"Could not resolve video: {e}")
 
@@ -284,7 +276,7 @@ def process(req: ProcessRequest):
     duration = info.get("duration")
 
     try:
-        raw_changes = find_change_points(stream_url, duration, stream_headers)
+        raw_changes = find_change_points(local_path, duration)
     except subprocess.TimeoutExpired:
         raise HTTPException(408, "Scene scan timed out - try a shorter video")
     except Exception as e:
@@ -303,18 +295,24 @@ def process(req: ProcessRequest):
             ]
 
     frames = []
-    job_id = uuid.uuid4().hex[:8]
     for i, secs in enumerate(frame_times):
         try:
             filename = f"frame_{job_id}_{i}.jpg"
             out_path = os.path.join(OUTPUT_DIR, filename)
-            extract_frame(stream_url, secs, out_path, stream_headers)
+            extract_frame(local_path, secs, out_path)
             mins = int(secs // 60)
             rem = secs % 60
             label = f"{mins}:{rem:05.2f}"
             frames.append({"timestamp": label, "seconds": round(secs, 2), "file": filename, "ok": True})
         except Exception as e:
             frames.append({"timestamp": f"{secs:.1f}s", "ok": False, "error": str(e)})
+
+    # done with the downloaded source video - remove it now rather than
+    # waiting for the next sweep, since these can be large
+    try:
+        os.remove(local_path)
+    except OSError:
+        pass
 
     return {
         "job_id": job_id,
