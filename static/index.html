@@ -7,7 +7,7 @@
 <style>
   :root{--bg:#0d1117;--card:#161b22;--accent:#3fb950;--text:#e6edf3;--muted:#8b949e;--border:#30363d;}
   *{box-sizing:border-box;}
-  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:24px;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:Arial,sans-serif;padding:24px;}
   .wrap{max-width:720px;margin:0 auto;}
   h1{font-size:22px;margin-bottom:4px;}
   p.sub{color:var(--muted);margin-top:0;margin-bottom:24px;font-size:14px;}
@@ -28,12 +28,252 @@
   .frame-card a{color:var(--accent);text-decoration:none;font-size:12px;}
   .error{color:#f85149;font-size:13px;padding:8px;}
   .status{font-size:13px;color:var(--muted);margin-top:10px;}
+  .tag{background:#21262d;border:1px solid var(--border);padding:2px 8px;border-radius:4px;font-size:12px;margin:2px;display:inline-block;}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>🎞️ Chief's Frame Grabber</h1>
-  <p class="sub">Pull HD frames from any YouTube video at exact timestamps.</p>
+  <h1>Chief's Frame Grabber</h1>
+  <p class="sub">Pull HD frames or info from any YouTube video.</p>
+
+  <div class="card">
+    <label>YouTube URL</label>
+    <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
+
+    <div id="quality-section">
+      <label>Quality</label>
+      <select id="quality">
+        <option value="best">Best available</option>
+        <option value="1080p">Up to 1080p</option>
+        <option value="720p">Up to 720p</option>
+      </select>
+    </div>
+
+    <label>Mode</label>
+    <select id="mode">
+      <option value="manual">Manual timestamps</option>
+      <option value="auto">Auto-detect scene changes</option>
+      <option value="metadata">Get video info (title, tags, thumbnail, etc)</option>
+    </select>
+
+    <div id="manual-section">
+      <label>Timestamps</label>
+      <div id="timestamps">
+        <div class="ts-row"><input type="text" class="ts-input" placeholder="e.g. 1:23 or 00:01:23"><button type="button" class="remove-row-btn">X</button></div>
+      </div>
+      <button type="button" class="btn-add" id="add-row-btn">+ Add another timestamp</button>
+    </div>
+
+    <div id="auto-section" style="display:none;">
+      <label>Sensitivity (lower = more frames caught)</label>
+      <input type="text" id="sensitivity" value="0.3" placeholder="0.0 - 1.0">
+      <label>Max frames (safety cap)</label>
+      <input type="text" id="maxframes" value="40">
+      <p style="color:var(--muted);font-size:12px;margin-top:-8px;">
+        Scans the whole video sequentially - slower than manual mode, especially on long videos.
+      </p>
+    </div>
+
+    <button type="button" class="btn-main" id="go">Extract Frames</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div id="results"></div>
+</div>
+
+<script>
+"use strict";
+
+function log(msg) {
+  console.log("[FrameGrabber]", msg);
+}
+
+function toggleMode() {
+  var mode = document.getElementById("mode").value;
+  document.getElementById("manual-section").style.display = (mode === "manual") ? "block" : "none";
+  document.getElementById("auto-section").style.display = (mode === "auto") ? "block" : "none";
+  document.getElementById("quality-section").style.display = (mode === "metadata") ? "none" : "block";
+  document.getElementById("go").textContent = (mode === "metadata") ? "Get Video Info" : "Extract Frames";
+}
+
+function addRow() {
+  var div = document.createElement("div");
+  div.className = "ts-row";
+  var input = document.createElement("input");
+  input.type = "text";
+  input.className = "ts-input";
+  input.placeholder = "e.g. 1:23 or 00:01:23";
+  var btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "remove-row-btn";
+  btn.textContent = "X";
+  div.appendChild(input);
+  div.appendChild(btn);
+  document.getElementById("timestamps").appendChild(div);
+  bindRemoveButtons();
+}
+
+function bindRemoveButtons() {
+  var buttons = document.querySelectorAll(".remove-row-btn");
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].onclick = function () {
+      var rows = document.querySelectorAll(".ts-row");
+      if (rows.length > 1) {
+        this.parentElement.remove();
+      }
+    };
+  }
+}
+
+function isLikelyYoutubeUrl(url) {
+  return /youtube\.com|youtu\.be/i.test(url);
+}
+
+function escapeHtml(str) {
+  var div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function renderMetadata(d) {
+  var results = document.getElementById("results");
+  results.style.gridTemplateColumns = "1fr";
+  var box = document.createElement("div");
+  box.className = "frame-card";
+  box.style.padding = "16px";
+
+  var tagsHtml = "";
+  if (d.tags && d.tags.length) {
+    for (var i = 0; i < d.tags.length; i++) {
+      tagsHtml += '<span class="tag">' + escapeHtml(d.tags[i]) + "</span>";
+    }
+  } else {
+    tagsHtml = '<span style="color:var(--muted);">No tags</span>';
+  }
+
+  var dur = "-";
+  if (d.duration_seconds) {
+    var mins = Math.floor(d.duration_seconds / 60);
+    var secs = d.duration_seconds % 60;
+    dur = mins + ":" + (secs < 10 ? "0" : "") + secs;
+  }
+
+  var viewsText = d.view_count ? d.view_count.toLocaleString() + " views" : "";
+  var descText = escapeHtml(d.description || "No description");
+  var catText = d.category || (d.categories && d.categories.join(", ")) || "-";
+
+  var html = "";
+  if (d.best_thumbnail) {
+    html += '<img src="' + d.best_thumbnail + '" style="width:100%;border-radius:6px;margin-bottom:12px;">';
+  }
+  html += "<h3 style=\"margin:0 0 4px;\">" + escapeHtml(d.title || "Untitled") + "</h3>";
+  html += '<p style="color:var(--muted);font-size:13px;margin:0 0 12px;">' + escapeHtml(d.channel || "Unknown channel") + " - " + dur + " - " + viewsText + "</p>";
+  html += '<p style="font-size:13px;white-space:pre-wrap;line-height:1.5;max-height:200px;overflow-y:auto;border:1px solid var(--border);padding:10px;border-radius:6px;">' + descText + "</p>";
+  html += '<div style="margin-top:12px;"><b style="font-size:13px;">Tags:</b><br>' + tagsHtml + "</div>";
+  html += '<p style="font-size:13px;margin-top:12px;"><b>Category:</b> ' + escapeHtml(catText) + "</p>";
+  html += '<p style="font-size:12px;color:var(--muted);margin-top:8px;">Uploaded: ' + (d.upload_date || "-") + " - Likes: " + (d.like_count != null ? d.like_count : "-") + " - Comments: " + (d.comment_count != null ? d.comment_count : "-") + "</p>";
+
+  box.innerHTML = html;
+  results.appendChild(box);
+}
+
+async function run() {
+  log("run() triggered");
+  var url = document.getElementById("url").value.trim();
+  var quality = document.getElementById("quality").value;
+  var mode = document.getElementById("mode").value;
+  var status = document.getElementById("status");
+  var results = document.getElementById("results");
+  var btn = document.getElementById("go");
+
+  status.textContent = "";
+
+  if (!url) {
+    status.textContent = "Enter a YouTube URL.";
+    return;
+  }
+  if (!isLikelyYoutubeUrl(url)) {
+    status.textContent = "That doesn't look like a YouTube URL. Paste the full link (youtube.com or youtu.be).";
+    return;
+  }
+
+  var endpoint, body;
+  if (mode === "manual") {
+    var inputs = document.querySelectorAll(".ts-input");
+    var timestamps = [];
+    for (var i = 0; i < inputs.length; i++) {
+      var v = inputs[i].value.trim();
+      if (v) timestamps.push(v);
+    }
+    if (timestamps.length === 0) {
+      status.textContent = "Add at least one timestamp.";
+      return;
+    }
+    endpoint = "/api/extract";
+    body = { url: url, timestamps: timestamps, quality: quality };
+    status.textContent = "Resolving video and extracting frames...";
+  } else if (mode === "auto") {
+    var sensitivity = parseFloat(document.getElementById("sensitivity").value) || 0.3;
+    var maxframes = parseInt(document.getElementById("maxframes").value) || 40;
+    endpoint = "/api/autodetect";
+    body = { url: url, quality: quality, sensitivity: sensitivity, max_frames: maxframes };
+    status.textContent = "Scanning full video for scene changes... this can take a while on longer videos.";
+  } else {
+    endpoint = "/api/metadata";
+    body = { url: url };
+    status.textContent = "Fetching video info...";
+  }
+
+  btn.disabled = true;
+  results.innerHTML = "";
+
+  try {
+    log("Sending request to " + endpoint);
+    var res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    var data = await res.json();
+    log("Response status: " + res.status);
+
+    if (!res.ok) {
+      status.textContent = data.detail || "Something went wrong (status " + res.status + ").";
+      btn.disabled = false;
+      return;
+    }
+
+    status.textContent = "Done.";
+
+    if (mode === "metadata") {
+      renderMetadata(data);
+    } else {
+      data.results.forEach(function (r) {
+        var card = document.createElement("div");
+        card.className = "frame-card";
+        if (r.ok) {
+          card.innerHTML = '<img src="/api/frame/' + r.file + '"><div class="ts-label"><span>' + r.timestamp + '</span><a href="/api/frame/' + r.file + '" download>Download</a></div>';
+        } else {
+          card.innerHTML = '<div class="error">' + r.timestamp + ": " + r.error + "</div>";
+        }
+        results.appendChild(card);
+      });
+    }
+  } catch (e) {
+    log("Request failed: " + e.message);
+    status.textContent = "Request failed: " + e.message;
+  }
+  btn.disabled = false;
+}
+
+document.getElementById("mode").addEventListener("change", toggleMode);
+document.getElementById("add-row-btn").addEventListener("click", addRow);
+document.getElementById("go").addEventListener("click", run);
+bindRemoveButtons();
+log("Script loaded and handlers bound.");
+</script>
+</body>
+</html>
 
   <div class="card">
     <label>YouTube URL</label>
