@@ -5,73 +5,351 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Chief's Frame Grabber</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  :root{--bg:#0d1117;--card:#161b22;--accent:#3fb950;--text:#e6edf3;--muted:#8b949e;--border:#30363d;}
+  :root{
+    --bg:#17140F;
+    --bg-raised:#1F1B12;
+    --bg-card:#1C1810;
+    --paper:#EFE7D8;
+    --accent:#E8A233;
+    --accent-dim:#B67F26;
+    --accent-2:#49C2B0;
+    --muted:#8D8770;
+    --border:#332D1E;
+    --border-soft:#26221645;
+    --danger:#E2574C;
+    --success:#6FBF73;
+    --radius:10px;
+    --font-display:'Big Shoulders Display',sans-serif;
+    --font-body:'IBM Plex Sans',sans-serif;
+    --font-mono:'IBM Plex Mono',monospace;
+  }
+
   *{box-sizing:border-box;}
-  body{margin:0;background:var(--bg);color:var(--text);font-family:Arial,sans-serif;padding:24px;}
-  .wrap{max-width:760px;margin:0 auto;}
-  h1{font-size:22px;margin-bottom:4px;}
-  p.sub{color:var(--muted);margin-top:0;margin-bottom:24px;font-size:14px;}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:16px;}
-  label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px;}
-  input[type=text], input[type=number], select{width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:#0d1117;color:var(--text);font-size:14px;margin-bottom:14px;}
-  .row{display:flex;gap:12px;}
+
+  @media (prefers-reduced-motion: no-preference){
+    .fade-in{animation:fadeIn 0.5s ease both;}
+    .fade-in.d1{animation-delay:.05s;}
+    .fade-in.d2{animation-delay:.1s;}
+  }
+  @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--paper);
+    font-family:var(--font-body);
+    min-height:100vh;
+    background-image:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 3px);
+  }
+
+  .hazard-bar{
+    height:5px;
+    width:100%;
+    background:repeating-linear-gradient(45deg, var(--accent-dim) 0, var(--accent-dim) 10px, var(--bg-raised) 10px, var(--bg-raised) 20px);
+    opacity:0.55;
+  }
+
+  .wrap{max-width:800px;margin:0 auto;padding:36px 20px 60px;}
+
+  header.masthead{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:8px;
+    margin-bottom:6px;
+    border-bottom:1px solid var(--border);
+    padding-bottom:16px;
+  }
+  h1{
+    font-family:var(--font-display);
+    font-weight:800;
+    font-size:34px;
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+    margin:0;
+    color:var(--paper);
+    line-height:1;
+  }
+  h1 span{color:var(--accent);}
+  .roll-tag{
+    font-family:var(--font-mono);
+    font-size:11px;
+    color:var(--muted);
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    border:1px solid var(--border);
+    padding:4px 8px;
+    border-radius:4px;
+    white-space:nowrap;
+  }
+  p.sub{
+    color:var(--muted);
+    margin:10px 0 28px;
+    font-size:14px;
+    max-width:56ch;
+  }
+
+  .eyebrow{
+    font-family:var(--font-mono);
+    font-size:11px;
+    letter-spacing:1.6px;
+    text-transform:uppercase;
+    color:var(--accent-2);
+    display:block;
+    margin-bottom:7px;
+  }
+
+  .card{
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:22px;
+    margin-bottom:20px;
+  }
+
+  input[type=text], input[type=number], select{
+    width:100%;
+    padding:11px 12px;
+    border-radius:6px;
+    border:1px solid var(--border);
+    background:var(--bg);
+    color:var(--paper);
+    font-family:var(--font-mono);
+    font-size:14px;
+    margin-bottom:16px;
+    transition:border-color .15s ease;
+  }
+  input::placeholder{color:#5c5844;}
+  input:focus, select:focus{
+    outline:none;
+    border-color:var(--accent);
+  }
+  input:focus-visible, select:focus-visible, button:focus-visible{
+    outline:2px solid var(--accent-2);
+    outline-offset:2px;
+  }
+
+  .row{display:flex;gap:14px;}
   .row > div{flex:1;}
-  .btn-main{background:var(--accent);color:#0d1117;font-weight:600;border:none;padding:12px;border-radius:6px;width:100%;font-size:15px;cursor:pointer;margin-top:6px;}
-  .btn-main:disabled{opacity:0.5;}
-  .status{font-size:13px;color:var(--muted);margin-top:10px;}
-  .meta-box{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px;}
-  .meta-box img{width:100%;border-radius:6px;margin-bottom:12px;}
-  .meta-box h3{margin:0 0 4px;display:inline;}
-  .meta-sub{color:var(--muted);font-size:13px;margin:0 0 12px;}
-  .desc-box{font-size:13px;white-space:pre-wrap;line-height:1.5;max-height:200px;overflow-y:auto;border:1px solid var(--border);padding:10px;border-radius:6px;}
-  .tag{background:#21262d;border:1px solid var(--border);padding:2px 8px;border-radius:4px;font-size:12px;margin:2px;display:inline-block;}
-  #frames{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-  .frame-card{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;position:relative;}
+
+  .btn-main{
+    background:var(--accent);
+    color:#1A1400;
+    font-family:var(--font-display);
+    font-weight:700;
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+    font-size:16px;
+    border:none;
+    padding:13px;
+    border-radius:6px;
+    width:100%;
+    cursor:pointer;
+    margin-top:4px;
+    transition:background .15s ease, transform .1s ease;
+  }
+  .btn-main:hover:not(:disabled){background:#F3B04E;}
+  .btn-main:active:not(:disabled){transform:scale(0.99);}
+  .btn-main:disabled{opacity:0.45;cursor:not-allowed;}
+
+  .status{
+    font-family:var(--font-mono);
+    font-size:12.5px;
+    color:var(--muted);
+    margin-top:12px;
+    min-height:16px;
+  }
+  .status.err{color:var(--danger);}
+
+  .meta-box{
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:18px;
+    margin-bottom:20px;
+  }
+  .meta-box img{width:100%;border-radius:6px;margin-bottom:14px;display:block;}
+
+  .meta-box h3{
+    margin:0;
+    display:inline;
+    font-family:var(--font-display);
+    font-weight:700;
+    font-size:22px;
+    letter-spacing:0.3px;
+    color:var(--paper);
+  }
+  .meta-sub{
+    color:var(--muted);
+    font-size:13px;
+    margin:6px 0 16px;
+    font-family:var(--font-mono);
+  }
+  .desc-box{
+    font-size:13.5px;
+    white-space:pre-wrap;
+    line-height:1.6;
+    max-height:200px;
+    overflow-y:auto;
+    border:1px solid var(--border);
+    background:var(--bg);
+    padding:12px;
+    border-radius:6px;
+    color:#D8D0BC;
+  }
+  .tag{
+    background:var(--bg);
+    border:1px solid var(--border);
+    color:var(--accent-2);
+    padding:3px 9px;
+    border-radius:4px;
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    margin:3px 4px 0 0;
+    display:inline-block;
+  }
+
+  #frames{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:2px;
+    background:var(--border);
+    border-radius:6px;
+    overflow:hidden;
+  }
+  .filmstrip-wrap{
+    border:1px solid var(--border);
+    border-radius:8px;
+    overflow:hidden;
+    margin-bottom:16px;
+  }
+  .perf-edge{
+    height:14px;
+    background-color:var(--bg-raised);
+    background-image:radial-gradient(circle at 10px 7px, var(--bg-card) 3.6px, transparent 4px);
+    background-size:20px 14px;
+    background-repeat:repeat-x;
+  }
+
+  .frame-card{
+    background:var(--bg-card);
+    overflow:hidden;
+    position:relative;
+  }
   .frame-card img{width:100%;display:block;}
-  .frame-card .ts-label{padding:8px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;}
-  .frame-card a{color:var(--accent);text-decoration:none;font-size:12px;}
-  .frame-checkbox{position:absolute;top:8px;left:8px;width:20px;height:20px;cursor:pointer;z-index:2;}
-  .error{color:#f85149;font-size:13px;padding:8px;}
-  .note{font-size:12px;color:var(--muted);margin-top:-8px;margin-bottom:14px;}
-  .row-inline{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
-  .copy-btn{background:#21262d;border:1px solid var(--border);color:var(--text);font-size:11px;padding:3px 10px;border-radius:5px;cursor:pointer;flex-shrink:0;}
-  .copy-btn:hover{background:#30363d;}
-  .copy-btn.copied{background:var(--accent);color:#0d1117;border-color:var(--accent);}
+  .frame-card .ts-label{
+    padding:8px 10px;
+    font-family:var(--font-mono);
+    font-size:12px;
+    color:var(--accent-2);
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    background:var(--bg-card);
+    letter-spacing:0.5px;
+  }
+  .frame-card a{color:var(--accent);text-decoration:none;font-size:11.5px;font-family:var(--font-mono);}
+  .frame-card a:hover{text-decoration:underline;}
+  .frame-checkbox{
+    position:absolute;top:8px;left:8px;width:19px;height:19px;
+    cursor:pointer;z-index:2;accent-color:var(--accent);
+  }
+  .error{color:var(--danger);font-size:12.5px;padding:10px;font-family:var(--font-mono);}
+
+  .note{
+    font-size:12px;
+    color:var(--muted);
+    margin:-6px 0 14px;
+    font-family:var(--font-mono);
+  }
+
   .field-label-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;}
-  .field-label-row b{font-size:13px;}
-  .selection-bar{display:flex;gap:8px;align-items:center;margin-bottom:12px;font-size:13px;color:var(--muted);}
-  .btn-small{background:#21262d;border:1px solid var(--border);color:var(--text);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;}
-  .btn-small:hover{background:#30363d;}
+
+  .copy-btn{
+    background:var(--bg);
+    border:1px solid var(--border);
+    color:var(--muted);
+    font-family:var(--font-mono);
+    font-size:10.5px;
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+    padding:4px 10px;
+    border-radius:5px;
+    cursor:pointer;
+    flex-shrink:0;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  .copy-btn:hover{border-color:var(--accent-2);color:var(--accent-2);}
+  .copy-btn.copied{background:var(--success);color:#0F1A10;border-color:var(--success);}
+
+  .selection-bar{
+    display:flex;gap:8px;align-items:center;margin-bottom:12px;
+    font-family:var(--font-mono);font-size:12.5px;color:var(--muted);flex-wrap:wrap;
+  }
+  .btn-small{
+    background:var(--bg-card);border:1px solid var(--border);color:var(--paper);
+    font-family:var(--font-mono);font-size:11.5px;padding:7px 13px;border-radius:6px;
+    cursor:pointer;text-transform:uppercase;letter-spacing:0.4px;
+    transition:border-color .15s ease;
+  }
+  .btn-small:hover:not(:disabled){border-color:var(--accent);}
   .btn-small:disabled{opacity:0.4;cursor:not-allowed;}
-  .thumb-wrap{position:relative;margin-bottom:12px;}
-  .thumb-download-btn{position:absolute;bottom:8px;right:8px;background:rgba(13,17,23,0.85);border:1px solid var(--border);color:var(--text);font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;}
+  .btn-small.primary{background:var(--accent);color:#1A1400;border-color:var(--accent);font-weight:600;}
+  .btn-small.primary:hover:not(:disabled){background:#F3B04E;}
+
+  .thumb-wrap{position:relative;margin-bottom:14px;}
+  .thumb-download-btn{
+    position:absolute;bottom:10px;right:10px;
+    background:rgba(23,20,15,0.88);border:1px solid var(--border);color:var(--paper);
+    font-family:var(--font-mono);font-size:11.5px;padding:7px 12px;border-radius:6px;cursor:pointer;
+    text-transform:uppercase;letter-spacing:0.4px;
+  }
+  .thumb-download-btn:hover{border-color:var(--accent);}
+
+  @media (max-width:520px){
+    #frames{grid-template-columns:1fr;}
+    h1{font-size:26px;}
+    .row{flex-direction:column;gap:0;}
+  }
 </style>
 </head>
 <body>
+<div class="hazard-bar"></div>
 <div class="wrap">
-  <h1>Chief's Frame Grabber</h1>
-  <p class="sub">Paste a link. Get clean frames from every scene change, plus full video info.</p>
+  <header class="masthead fade-in">
+    <h1>Chief's <span>Frame</span> Grabber</h1>
+    <span class="roll-tag">ROLL 002 · SCENE DETECT</span>
+  </header>
+  <p class="sub fade-in d1">Paste a link. Get clean frames pulled from real scene changes, plus full video metadata — no guesswork, no blurry mid-cut grabs.</p>
 
-  <div class="card">
-    <label>YouTube URL</label>
+  <div class="card fade-in d2">
+    <span class="eyebrow">Source</span>
+    <label for="url" style="display:none;">YouTube URL</label>
     <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
 
     <div class="row">
       <div>
-        <label>Number of frames</label>
+        <span class="eyebrow">Frame count</span>
+        <label for="framecount" style="display:none;">Number of frames</label>
         <input type="number" id="framecount" value="10" min="1" max="60">
       </div>
       <div>
-        <label>Quality</label>
+        <span class="eyebrow">Resolution</span>
+        <label for="quality" style="display:none;">Quality</label>
         <select id="quality">
-          <option value="720p">Up to 720p (faster)</option>
+          <option value="720p">Up to 720p — faster</option>
           <option value="1080p">Up to 1080p</option>
           <option value="best">Best available</option>
         </select>
       </div>
     </div>
-    <p class="note">Frames are picked automatically from real scene changes in the video, not evenly spaced cuts.</p>
+    <p class="note">Frames are picked from real scene changes in the footage, not evenly spaced cuts.</p>
 
     <button type="button" class="btn-main" id="go">Process Video</button>
     <div class="status" id="status"></div>
@@ -79,7 +357,11 @@
 
   <div id="meta-container"></div>
   <div id="selection-bar-container"></div>
-  <div id="frames"></div>
+  <div class="filmstrip-wrap" id="filmstrip-wrap" style="display:none;">
+    <div class="perf-edge"></div>
+    <div id="frames"></div>
+    <div class="perf-edge"></div>
+  </div>
 </div>
 
 <script>
@@ -103,7 +385,7 @@ async function copyToClipboard(text, btn) {
   try {
     await navigator.clipboard.writeText(text);
     var original = btn.textContent;
-    btn.textContent = "Copied!";
+    btn.textContent = "Copied";
     btn.classList.add("copied");
     setTimeout(function () {
       btn.textContent = original;
@@ -111,7 +393,7 @@ async function copyToClipboard(text, btn) {
     }, 1500);
   } catch (e) {
     log("Copy failed: " + e.message);
-    btn.textContent = "Copy failed";
+    btn.textContent = "Failed";
     setTimeout(function () { btn.textContent = "Copy"; }, 1500);
   }
 }
@@ -119,7 +401,7 @@ async function copyToClipboard(text, btn) {
 function renderMetadata(d) {
   var container = document.getElementById("meta-container");
   var box = document.createElement("div");
-  box.className = "meta-box";
+  box.className = "meta-box fade-in";
 
   var tagsHtml = "";
   var tagsPlainText = "";
@@ -129,7 +411,7 @@ function renderMetadata(d) {
     }
     tagsPlainText = d.tags.join(", ");
   } else {
-    tagsHtml = '<span style="color:var(--muted);">No tags</span>';
+    tagsHtml = '<span style="color:var(--muted);font-family:var(--font-mono);font-size:12.5px;">No tags</span>';
   }
 
   var dur = "-";
@@ -148,21 +430,24 @@ function renderMetadata(d) {
   if (d.best_thumbnail) {
     html += '<div class="thumb-wrap">';
     html += '<img src="' + d.best_thumbnail + '">';
-    html += '<button type="button" class="thumb-download-btn" id="thumb-dl-btn">Download Thumbnail</button>';
+    html += '<button type="button" class="thumb-download-btn" id="thumb-dl-btn">Save thumbnail</button>';
     html += '</div>';
   }
 
+  html += '<span class="eyebrow">Title</span>';
   html += '<div class="field-label-row"><h3>' + escapeHtml(titleText) + '</h3><button type="button" class="copy-btn" id="copy-title-btn">Copy</button></div>';
-  html += '<p class="meta-sub">' + escapeHtml(d.channel || "Unknown channel") + " - " + dur + " - " + viewsText + "</p>";
+  html += '<p class="meta-sub">' + escapeHtml(d.channel || "Unknown channel") + " · " + dur + " · " + viewsText + "</p>";
 
-  html += '<div class="field-label-row"><b>Description</b><button type="button" class="copy-btn" id="copy-desc-btn">Copy</button></div>';
+  html += '<span class="eyebrow" style="margin-top:14px;">Description</span>';
+  html += '<div class="field-label-row"><span></span><button type="button" class="copy-btn" id="copy-desc-btn">Copy</button></div>';
   html += '<div class="desc-box">' + descText + "</div>";
 
-  html += '<div class="field-label-row" style="margin-top:12px;"><b>Tags</b><button type="button" class="copy-btn" id="copy-tags-btn">Copy</button></div>';
+  html += '<span class="eyebrow" style="margin-top:14px;">Tags</span>';
+  html += '<div class="field-label-row"><span></span><button type="button" class="copy-btn" id="copy-tags-btn">Copy</button></div>';
   html += '<div>' + tagsHtml + "</div>";
 
-  html += '<p style="font-size:13px;margin-top:12px;"><b>Category:</b> ' + escapeHtml(catText) + "</p>";
-  html += '<p style="font-size:12px;color:var(--muted);margin-top:8px;">Uploaded: ' + (d.upload_date || "-") + " - Likes: " + (d.like_count != null ? d.like_count : "-") + " - Comments: " + (d.comment_count != null ? d.comment_count : "-") + "</p>";
+  html += '<p style="font-size:12.5px;margin-top:16px;font-family:var(--font-mono);color:var(--muted);"><b style="color:var(--paper);">Category</b> ' + escapeHtml(catText) + "</p>";
+  html += '<p style="font-size:11.5px;color:var(--muted);margin-top:6px;font-family:var(--font-mono);">Uploaded ' + (d.upload_date || "-") + " · Likes " + (d.like_count != null ? d.like_count : "-") + " · Comments " + (d.comment_count != null ? d.comment_count : "-") + "</p>";
 
   box.innerHTML = html;
   container.appendChild(box);
@@ -195,12 +480,16 @@ var selectedFrames = {};
 
 function renderFrames(frames, detectedChanges, requested) {
   selectedFrames = {};
+  var filmstripWrap = document.getElementById("filmstrip-wrap");
   var container = document.getElementById("frames");
+  container.innerHTML = "";
+  filmstripWrap.style.display = "block";
+
   var note = document.createElement("p");
   note.className = "note";
   note.style.marginTop = "0";
   note.textContent = "Detected " + detectedChanges + " scene changes, extracted " + frames.length + " of " + requested + " requested frames.";
-  container.parentElement.insertBefore(note, container);
+  filmstripWrap.parentElement.insertBefore(note, filmstripWrap);
 
   var okFrames = frames.filter(function (r) { return r.ok; });
 
@@ -241,10 +530,10 @@ function renderSelectionBar(okFrames) {
   var bar = document.createElement("div");
   bar.className = "selection-bar";
   bar.innerHTML =
-    '<button type="button" class="btn-small" id="select-all-btn">Select All</button>' +
-    '<button type="button" class="btn-small" id="deselect-all-btn">Deselect All</button>' +
+    '<button type="button" class="btn-small" id="select-all-btn">Select all</button>' +
+    '<button type="button" class="btn-small" id="deselect-all-btn">Deselect all</button>' +
     '<span id="selection-count">0 selected</span>' +
-    '<button type="button" class="btn-small" id="download-selected-btn" disabled style="margin-left:auto;">Download Selected</button>';
+    '<button type="button" class="btn-small primary" id="download-selected-btn" disabled style="margin-left:auto;">Download selected</button>';
   barContainer.innerHTML = "";
   barContainer.appendChild(bar);
 
@@ -318,20 +607,27 @@ async function run() {
   var status = document.getElementById("status");
   var metaContainer = document.getElementById("meta-container");
   var selectionBarContainer = document.getElementById("selection-bar-container");
+  var filmstripWrap = document.getElementById("filmstrip-wrap");
   var framesContainer = document.getElementById("frames");
   var btn = document.getElementById("go");
 
+  status.className = "status";
   status.textContent = "";
   metaContainer.innerHTML = "";
   selectionBarContainer.innerHTML = "";
   framesContainer.innerHTML = "";
+  filmstripWrap.style.display = "none";
+  var oldNote = filmstripWrap.parentElement.querySelector(".note");
+  if (oldNote) oldNote.remove();
 
   if (!url) {
     status.textContent = "Enter a YouTube URL.";
+    status.className = "status err";
     return;
   }
   if (!isLikelyYoutubeUrl(url)) {
     status.textContent = "That doesn't look like a YouTube URL. Paste the full link (youtube.com or youtu.be).";
+    status.className = "status err";
     return;
   }
 
@@ -350,6 +646,7 @@ async function run() {
 
     if (!res.ok) {
       status.textContent = data.detail || "Something went wrong (status " + res.status + ").";
+      status.className = "status err";
       btn.disabled = false;
       return;
     }
@@ -360,11 +657,15 @@ async function run() {
   } catch (e) {
     log("Request failed: " + e.message);
     status.textContent = "Request failed: " + e.message;
+    status.className = "status err";
   }
   btn.disabled = false;
 }
 
 document.getElementById("go").addEventListener("click", run);
+document.getElementById("url").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") run();
+});
 log("Script loaded and handlers bound.");
 </script>
 </body>
