@@ -16,6 +16,7 @@ peak of the transition (often mid-crossfade / blurry). This version:
      video, not just clustered near a busy section
 """
 
+import base64
 import os
 import re
 import subprocess
@@ -27,6 +28,32 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 import yt_dlp
+
+# --- Cookie support -----------------------------------------------------
+# YouTube blocks most datacenter IPs (Railway, AWS, etc.) with a
+# "Sign in to confirm you're not a bot" error unless requests carry a real
+# logged-in session's cookies. We read those from an environment variable
+# (never committed to the repo) so your account session isn't exposed on
+# GitHub. Set YOUTUBE_COOKIES_B64 in Railway's Variables tab - see README
+# for how to generate it.
+COOKIE_FILE_PATH = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+
+
+def setup_cookie_file() -> Optional[str]:
+    b64_cookies = os.environ.get("YOUTUBE_COOKIES_B64")
+    if not b64_cookies:
+        return None
+    try:
+        raw = base64.b64decode(b64_cookies)
+        with open(COOKIE_FILE_PATH, "wb") as f:
+            f.write(raw)
+        return COOKIE_FILE_PATH
+    except Exception:
+        return None
+
+
+COOKIE_FILE = setup_cookie_file()
+# -------------------------------------------------------------------------
 
 app = FastAPI(title="Chief's Frame Grabber")
 
@@ -41,24 +68,55 @@ class ProcessRequest(BaseModel):
     quality: str = "720p"  # best | 1080p | 720p
 
 
+def _try_extract(youtube_url: str, ydl_opts: dict):
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(youtube_url, download=False)
+
+
 def get_video_data(youtube_url: str, quality: str) -> Tuple[dict, str]:
     """
     One yt-dlp call gets both the full metadata dict AND the direct stream URL
     needed for ffmpeg - no need to hit YouTube twice.
+
+    Cloud/datacenter IPs (Railway, AWS, etc.) frequently get YouTube's
+    "Sign in to confirm you're not a bot" block on the default web client.
+    The android/ios player clients usually aren't subject to this check, so
+    we try those first and only fall back to the default client if needed.
     """
     format_map = {
         "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "1080p": "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height<=1080]",
         "720p": "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[height<=720]",
     }
-    ydl_opts = {
+    base_opts = {
         "quiet": True,
         "no_warnings": True,
         "format": format_map.get(quality, format_map["720p"]),
         "noplaylist": True,
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(youtube_url, download=False)
+    if COOKIE_FILE:
+        base_opts["cookiefile"] = COOKIE_FILE
+
+    client_attempts = [
+        {"player_client": ["android"]},
+        {"player_client": ["ios"]},
+        {"player_client": ["web"]},  # default - last resort
+    ]
+
+    last_error = None
+    info = None
+    for client_args in client_attempts:
+        opts = dict(base_opts)
+        opts["extractor_args"] = {"youtube": client_args}
+        try:
+            info = _try_extract(youtube_url, opts)
+            break
+        except Exception as e:
+            last_error = e
+            continue
+
+    if info is None:
+        raise last_error
 
     if "requested_formats" in info and info["requested_formats"]:
         stream_url = info["requested_formats"][0]["url"]
