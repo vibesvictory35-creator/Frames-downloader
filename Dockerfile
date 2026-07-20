@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # adjust this to however you start your app
-CMD ["python", "main.py"]
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port $PORT"]
